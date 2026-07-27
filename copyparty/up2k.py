@@ -1,5 +1,5 @@
 # coding: utf-8
-from __future__ import print_function, unicode_literals
+from __future__ import division, print_function, unicode_literals
 
 import errno
 import hashlib
@@ -5704,7 +5704,7 @@ def up2k_chunksize(filesize: int) -> int:
     stepsize = 512 * 1024
     while True:
         for mul in [1, 2]:
-            nchunks = math.ceil(filesize * 1.0 / chunksize)
+            nchunks = -int(-filesize // chunksize)
             if nchunks <= 256 or (chunksize >= 32 * 1024 * 1024 and nchunks <= 4096):
                 return chunksize
 

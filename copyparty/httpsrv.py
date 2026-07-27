@@ -1,5 +1,5 @@
 # coding: utf-8
-from __future__ import print_function, unicode_literals
+from __future__ import division, print_function, unicode_literals
 
 import hashlib
 import math
@@ -318,7 +318,7 @@ class HttpSrv(object):
 
         self.srvs.append(sck)
         self.bound.add((ip, port))
-        self.nclimax = math.ceil(self.args.nc * 1.0 / nlisteners)
+        self.nclimax = -int(-self.args.nc // nlisteners)
         Daemon(
             self.thr_listen,
             "httpsrv-n{}-listen-{}-{}".format(self.nid or "0", ip, port),

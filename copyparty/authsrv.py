@@ -1,5 +1,5 @@
 # coding: utf-8
-from __future__ import print_function, unicode_literals
+from __future__ import division, print_function, unicode_literals
 
 import argparse
 import base64
@@ -2870,12 +2870,13 @@ class AuthSrv(object):
                 continue
             try:
                 bos.makedirs(vol.realpath, vf=vol.flags)
-                files = os.listdir(vol.realpath)
-                for fn in files:
+                for fn, _ in statdir(
+                    self.log_func, not self.args.no_scandir, False, vol.realpath, True
+                ):
                     fn2 = fn.lower()
                     if fn == fn2:
                         fn2 = fn.upper()
-                    if fn == fn2 or fn2 in files:
+                    if fn == fn2:
                         continue
                     is_ci = os.path.exists(os.path.join(vol.realpath, fn2))
                     ccs = "y" if is_ci else "n"

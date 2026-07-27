@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # coding: utf-8
-from __future__ import print_function, unicode_literals
+from __future__ import division, print_function, unicode_literals
 
 """copyparty: http file sharing hub (py2/py3)"""
 __author__ = "ed <copyparty@ocv.me>"
@@ -1042,7 +1042,12 @@ def get_sects():
             .1   = when necessary, append a dot followed by a single digit
             .1!  = counter is always added, even when not necessary
             -3   = a hyphen followed by three-digit counter
-            no   = disable counter; overwrite existing logfile
+            no   = disable counter; append to existing file
+            del  = delete existing logfile and create new
+            over = overwrite existing logfile
+
+            append is not possible for .xz-compressed logfiles;
+            if logfile is *.xz and rlo is no then rlo will be .1
             """
             ),
         ],
@@ -1427,7 +1432,7 @@ def add_auth(ap):
     ap2.add_argument("--no-bauth", action="store_true", help="disable basic-authentication support; do not accept passwords from the 'Authenticate' header at all. NOTE: This breaks support for the android app")
     ap2.add_argument("--bauth-last", action="store_true", help="keeps basic-authentication enabled, but only as a last-resort; if a cookie is also provided then the cookie wins")
     ap2.add_argument("--ses-db", metavar="PATH", type=u, default=ses_db, help="where to store the sessions database (if you run multiple copyparty instances, make sure they use different DBs)")
-    ap2.add_argument("--ses-len", metavar="CHARS", type=int, default=20, help="session key length; default is 120 bits ((20//4)*4*6)")
+    ap2.add_argument("--ses-len", metavar="CHARS", type=int, default=24, help="session key length; default is 144 bits ((24//4)*4*6)")
     ap2.add_argument("--no-ses", action="store_true", help="disable sessions; use plaintext passwords in cookies")
     ap2.add_argument("--grp-all", metavar="NAME", type=u, default="acct", help="the name of the auto-generated group which contains every username which is known")
     ap2.add_argument("--ipu", metavar="CIDR=USR", type=u, action="append", help="\033[34mREPEATABLE:\033[0m users with IP matching \033[33mCIDR\033[0m are auto-authenticated as username \033[33mUSR\033[0m; example: [\033[32m172.16.24.0/24=dave]")
@@ -1755,7 +1760,7 @@ def add_logging(ap):
     ap2.add_argument("-q", action="store_true", help="quiet; disable most STDOUT messages")
     ap2.add_argument("-lo", metavar="PATH", type=u, default="", help="logfile; use .txt for plaintext or .xz for compressed. Example: \033[32mcpp-%%Y-%%m%%d-%%H%%M%%S.txt.xz\033[0m (NB: some errors may appear on STDOUT only)")
     ap2.add_argument("--flo", metavar="N", type=int, default=1, help="log format for \033[33m-lo\033[0m; [\033[32m1\033[0m]=classic/colors, [\033[32m2\033[0m]=no-color")
-    ap2.add_argument("--rlo", metavar="TXT", type=u, default=".1", help="logrotate counter format; see \033[33m--help-rlo\033[0m")
+    ap2.add_argument("--rlo", metavar="TXT", type=u, default="no", help="logrotate counter format; see \033[33m--help-rlo\033[0m")
     ap2.add_argument("--logrot-sig", metavar="S", type=u, default="", help="immediately logrotate when unix-signal \033[33mS\033[0m is received; examples: [\033[32mSIGHUP\033[0m], [\033[32mHUP\033[0m], [\033[32m1\033[0m]")
     ap2.add_argument("--no-ansi", action="store_true", default=not VT100, help="disable colors; same as environment-variable NO_COLOR")
     ap2.add_argument("--ansi", action="store_true", help="force colors; overrides environment-variable NO_COLOR")
