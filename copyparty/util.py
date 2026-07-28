@@ -678,6 +678,12 @@ except:
     HAVE_BWRAP = ""
 
 
+if ANYWIN:
+    SCWD = os.environ["systemroot"]
+else:
+    SCWD = None
+
+
 def py_desc() -> str:
     interp = platform.python_implementation()
     py_ver = ".".join([str(x) for x in sys.version_info])
@@ -4220,6 +4226,10 @@ def _runhook(
             if src in ("xm", "xban"):
                 ja["txt"] = txt[0]
                 ja["body"] = txt[1]
+            elif src == "xbr":
+                ja["ap_to"] = txt[0]
+            elif src in ("xar.ln", "xar.mv"):
+                ja["ap_from"] = txt[0]
             else:
                 ja["wark"] = txt[0]  # acshually the dwark but less confusing
         if imp:
@@ -4521,6 +4531,18 @@ def hidedir(dp) -> None:
                 k32.SetFileAttributesW(dp, attrs | 2)
         except:
             pass
+
+
+def winsparse(f: typing.BinaryIO) -> None:
+    assert ctypes  # !rm
+    assert wk32  # !rm
+    import msvcrt
+
+    fh = msvcrt.get_osfhandle(f.fileno())
+    if not wk32.DeviceIoControl(
+        fh, 0x900C4, None, 0, None, 0, ctypes.byref(ctypes.c_ulong()), None
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 _flocks = {}

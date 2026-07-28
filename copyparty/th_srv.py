@@ -33,6 +33,7 @@ from .mtag import (
 from .util import BytesIO  # type: ignore
 from .util import (
     FFMPEG_URL,
+    SCWD,
     VF_CAREFUL,
     Cooldown,
     Daemon,
@@ -779,7 +780,7 @@ class ThumbSrv(object):
         self.wait4ram(0.6, tpath)
         bap = fsenc(abspath)
         # fmt: off
-        cmd = bwrap(HAVE_DCRAW, bap, b"") + [
+        cmd = bwrap(HAVE_DCRAW[0], bap, b"") + [
             b"-h",  # halfsize
             b"-o", b"1",  # srgb
             b"-s", b"0",  # first frame
@@ -787,7 +788,7 @@ class ThumbSrv(object):
             bap,
         ]
         # fmt: on
-        p = sp.Popen(cmd, stdout=sp.PIPE)
+        p = sp.Popen(cmd, stdout=sp.PIPE, cwd=SCWD)
         try:
             if HAVE_PIL:
                 self.conv_image_pil(Image.open(p.stdout), tpath, fmt, vn)
@@ -882,7 +883,7 @@ class ThumbSrv(object):
         bap_in = fsenc(abspath)
         bap_out = fsenc(tpath)
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner"
@@ -923,7 +924,7 @@ class ThumbSrv(object):
 
     def _run_ff(self, cmd: list[bytes], vn: VFS, kto: str, oom: int = 400) -> None:
         # self.log((b" ".join(cmd)).decode("utf-8"))
-        ret, _, serr = runcmd(cmd, timeout=vn.flags[kto], nice=True, oom=oom)
+        ret, _, serr = runcmd(cmd, cwd=SCWD, timeout=vn.flags[kto], nice=True, oom=oom)
         if not ret:
             return
 
@@ -1025,7 +1026,7 @@ class ThumbSrv(object):
         bap_out = fsenc(tpath)
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1106,7 +1107,7 @@ class ThumbSrv(object):
             bap_out = fsenc(infile)
 
             # fmt: off
-            cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+            cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
                 b"-nostdin",
                 b"-v", b"error",
                 b"-hide_banner",
@@ -1140,7 +1141,7 @@ class ThumbSrv(object):
         bap_out = fsenc(tpath)
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1178,7 +1179,7 @@ class ThumbSrv(object):
         # to not support opus then it's probably also super picky
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1209,7 +1210,7 @@ class ThumbSrv(object):
         bap_out = fsenc(tpath)
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1246,7 +1247,7 @@ class ThumbSrv(object):
         bap_out = fsenc(tpath)
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1309,7 +1310,7 @@ class ThumbSrv(object):
         bap_out = fsenc(tpath)
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1352,7 +1353,7 @@ class ThumbSrv(object):
         bap_out = fsenc(tmp_opus)
 
         # fmt: off
-        cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+        cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",
@@ -1379,7 +1380,7 @@ class ThumbSrv(object):
             bap_in = fsenc(abspath)
             bap_out = fsenc(tpath)
             # fmt: off
-            cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+            cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
                 b"-nostdin",
                 b"-v", b"error",
                 b"-hide_banner",
@@ -1401,7 +1402,7 @@ class ThumbSrv(object):
             bap_in = fsenc(tmp_opus)
             bap_out = fsenc(tpath)
             # fmt: off
-            cmd = bwrap(HAVE_FFMPEG, bap_in, bap_out) + [
+            cmd = bwrap(HAVE_FFMPEG[0], bap_in, bap_out) + [
                 b"-nostdin",
                 b"-v", b"error",
                 b"-hide_banner",

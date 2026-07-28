@@ -74,6 +74,7 @@ from .util import (
     vsplit,
     w8b64dec,
     w8b64enc,
+    winsparse,
     wunlink,
 )
 
@@ -4734,7 +4735,7 @@ class Up2k(object):
                 fsize,
                 ip,
                 time.time(),
-                None,
+                [dabs],
             )
             t = hr.get("rejectmsg") or ""
             if t or hr.get("rc") != 0:
@@ -4777,7 +4778,7 @@ class Up2k(object):
                     fsize,
                     ip,
                     time.time(),
-                    None,
+                    [sabs],
                 )
 
             return "k"
@@ -4907,7 +4908,7 @@ class Up2k(object):
                 fsize,
                 ip,
                 time.time(),
-                None,
+                [sabs],
             )
 
         return "k"
@@ -5315,9 +5316,12 @@ class Up2k(object):
                 and self.args.sparse * 1024 * 1024 <= sz
             ):
                 try:
-                    sp.check_call(["fsutil", "sparse", "setflag", abspath])
-                except:
-                    self.log("could not sparse %r" % (abspath,), 3)
+                    winsparse(f)
+                    # some kernels/etc are buggy; force sync:
+                    f.close()
+                    f = open(abspath, "rb+")
+                except Exception as ex:
+                    self.log("could not sparse %r: %s" % (abspath, ex), 3)
                     relabel = True
                     sprs = False
 
