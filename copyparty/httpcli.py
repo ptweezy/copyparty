@@ -1657,7 +1657,8 @@ class HttpCli(object):
                 raise Pebkac(500, "too many wopi sessions")
             if not found:
                 atoken = ub64enc(os.urandom(18)).decode("ascii")  #  18 = 144b = 24c
-                file_id = ub64enc(os.urandom(15)).decode("ascii")  # 15 = 120b = 20c
+                zb = (vpath + self.args.wopi_salt).encode("utf-8", "replace")
+                file_id = ub64enc(hashlib.sha512(zb).digest()[:15]).decode("ascii")
                 wopi_files[atoken] = session = {
                     "vp": vpath,
                     "uname": self.uname,
@@ -1665,7 +1666,7 @@ class HttpCli(object):
                     "expires": time.time() + self.args.wopi_ttl,
                 }
 
-        xml = "?"
+        xml = url = "?"
         try:
             from .dxml import parse_xml
 
@@ -1703,7 +1704,8 @@ class HttpCli(object):
             url += quotep(zs + "/wopi/files/" + session["file_id"])
         except:
             del wopi_files[atoken]  # dont reuse an atoken wopi-client doesnt like
-            self.log("reading WOPI-client response failed; %s\n%s" % (min_ex(), xml), 3)
+            t = "reading WOPI-client response from %s failed; %s\n%s"
+            self.log(t % (url, min_ex(), xml), 3)
             raise Pebkac(500, "wopi error (see fileserver log)")
 
         html = self.j2s(
@@ -1711,7 +1713,7 @@ class HttpCli(object):
             title=self.uparam["wopi"],
             url=url,
             atoken=atoken,
-            ttl=session["expires"],
+            ttl=int(session["expires"] * 1000),
         ).encode("utf-8", "replace")
 
         self.reply(html, 200, "text/html; charset=utf-8")
@@ -8059,6 +8061,10 @@ class HttpCli(object):
                         ext in self.thumbcli.fmt_pil
                         or ext in self.thumbcli.fmt_vips
                         or ext in self.thumbcli.fmt_ffi
+                        or (
+                            ext in self.thumbcli.thumbable
+                            and ext not in self.thumbcli.thumbable_native
+                        )
                     )
                     is_vid = ext in self.thumbcli.fmt_ffv
                     is_au = ext in self.thumbcli.fmt_ffa
