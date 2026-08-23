@@ -2040,6 +2040,15 @@ class AuthSrv(object):
                 umap[usr].sort()
             setattr(vfs, "a" + perm, umap)
 
+        if self.args.wopi:
+            zsl = unames[:]
+            if self.args.wopi_accs:
+                zsl = [x.strip() for x in self.args.wopi_accs.split(",")]
+            axs = AXS(zsl, zsl, None, zsl)
+            vn = VFS(self.log_func, "", "wopi", "", axs, self.vf0())
+            vn.flags["unlistcr"] = vn.flags["unlistcw"] = True
+            vfs.nodes["wopi"] = vfs.all_nodes["wopi"] = vn
+
         for vol in vfs.all_nodes.values():
             za = vol.axs
             vol.uaxs = {
@@ -2764,7 +2773,7 @@ class AuthSrv(object):
 
                 for k in drop:
                     t = 'cannot enable [%s] for volume "/%s" because this requires one of the following: e2d / e2ds / e2dsa  (either as volflag or global-option)'
-                    if not (enshare and vp.startswith(shrs)):
+                    if not (enshare and vol.vpath.startswith(shrs)):
                         self.log(t % (k, vol.vpath), 1)
                     vol.flags.pop(k)
 
@@ -3214,6 +3223,13 @@ class AuthSrv(object):
                 shn.dbpath = o_vn.dbpath
                 shn.histpath = o_vn.histpath
 
+                zs = "assert_root daw dk dks dky e2ds e2dsa e2ts e2tsr fk fka landmark opds rss scan th_pregen"
+                for zs2 in zs.split(" "):
+                    shn.flags.pop(zs2, None)
+                zs = "srch_excl srch_re_dots srch_re_nodot th_coversd th_coversl"
+                for zs2 in zs.split(" "):
+                    shn.flags[zs2] = []
+
                 # root.all_aps doesn't include any shares, so make a copy where the
                 # share appears in all abspaths it can provide (for example for chk_ap)
                 ap = shn.realpath
@@ -3243,6 +3259,9 @@ class AuthSrv(object):
             # transplant shadowing into shares
             for vn in shv.nodes.values():
                 svn, srem = vn.shr_src  # type: ignore
+                if "show_hist" not in vn.flags:
+                    zvn = VFS(self.log_func, "", "", "", AXS(), self.vf0())
+                    vn.nodes[".hist"] = zvn
                 if srem:
                     continue  # free branch, safe
                 ap = svn.canonical(srem)

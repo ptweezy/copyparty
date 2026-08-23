@@ -1631,6 +1631,7 @@ def add_opds(ap):
 def add_wopi(ap):
     ap2 = ap.add_argument_group("WOPI options")
     ap2.add_argument("--wopi", action="store_true", help="enable integration with office suites using WOPI")
+    ap2.add_argument("--wopi-accs", metavar="TXT", type=u, default="", help="restrict wopi to this comma-separated list of usernames; default is everyone")
     ap2.add_argument("--wopi-api", metavar="URL", type=u, default="", help="URL that the WOPI-client should use to communicate with copyparty; default is same as user's webbrowser. Example: [\033[32mhttps://party.example.com/\033[0m]")
     ap2.add_argument("--wopi-url", metavar="URL", type=u, default="", help="URL to your WOPI client; the host of e.g. Collabora Online. Example: [\033[32mhttps://code.example.com/\033[0m]")
     ap2.add_argument("--wopi-urls", metavar="H=U", type=u, action="append", help="\033[34mREPEATABLE:\033[0m maps http \033[33mH\033[0mOST copyparty being accessed by to specific WOPI client instance \033[33mU\033[0mRL; falls back to \033[33m--wopi-url\033[0m; examples: [\033[32mparty.public.com=https://office.public.com/\033[0m], [\033[32mparty.internal.net:8443=https://office.internal.net:8443/\033[0m]")
@@ -1678,6 +1679,7 @@ def add_yolo(ap):
     ap2 = ap.add_argument_group("yolo options")
     ap2.add_argument("--allow-csrf", action="store_true", help="disable csrf protections; let other domains/sites impersonate you through cross-site requests; \033[1;31mDANGEROUS\033[0m / LAN-only")
     ap2.add_argument("--cookie-lax", action="store_true", help="allow cookies from other domains (if you follow a link from another website into your server, you will arrive logged-in); this reduces protection against CSRF")
+    ap2.add_argument("--allow-svg-js", action="store_true", help="allow svg images to execute javascript; default-disabled because ~nobody wants it (volflag=allow_svg_js)")
     ap2.add_argument("--no-fnugg", action="store_true", help="disable the smoketest for caching-related issues in the web-UI")
     ap2.add_argument("--getmod", action="store_true", help="permit ?move=[...] and ?delete as GET -- \033[1;31mDANGEROUS\033[0m, removes csrf protection")
     ap2.add_argument("--wo-up-readme", action="store_true", help="allow users with write-only access to upload logues and readmes without adding the _wo_ filename prefix (volflag=wo_up_readme)")
