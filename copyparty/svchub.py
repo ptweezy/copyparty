@@ -411,32 +411,32 @@ class SvcHub(object):
             args.log_fk = re.compile(args.log_fk)
 
         # on-the-fly video transcoding (HLS); requires FFmpeg with libx264+aac.
-        # must run before AuthSrv so the have_vcode client-flag is correct
+        # only the cheap, no-exec decisions happen here, before AuthSrv bakes
+        # have_vcode into the client flags; the probes that actually execute
+        # ffmpeg run in _probe_vcode() later, once _check_toolpaths has had the
+        # chance to reject a binary sitting inside a writable volume (we must
+        # never run a tool that upstream would refuse to use)
         args.have_x264 = args.have_aac = False
         args.vt_hwenc = []  # validated hardware h264 encoders (abstract names)
         args.vt_tm = ""  # working HDR->SDR tonemap method (placebo/opencl/zscale)
         args.vt_rr = 0  # realtime-pacing support level (0=none 1=readrate 2=+burst)
+        # the video formats we transcode = the ones ThumbSrv lets ffmpeg see
+        # (same normalization upstream applies to th_r_ffv a bit further down);
+        # tx_hls gates on this and the client builds its <video> filter from it
+        args.vt_exts = _build_th_fset(args.th_r_ffv, args.th_ffv_add)
+        if not args.no_vcode and args.no_thumb:
+            # the transcode cache is expired and invalidated by ThumbSrv.clean,
+            # so without thumbnails it would grow forever (upstream does the
+            # same for audio transcoding)
+            args.no_vcode = True
+            self.log("thumb", "setting --no-vcode because --no-thumb (sorry)", 6)
+        if not args.no_vcode and (not HAVE_FFMPEG or not HAVE_FFPROBE):
+            args.no_vcode = True
+            self.log("thumb", "setting --no-vcode because FFmpeg or FFprobe is not available", 6)
         if not args.no_vcode:
-            if not HAVE_FFMPEG or not HAVE_FFPROBE:
-                args.no_vcode = True
-                self.log("thumb", "setting --no-vcode because FFmpeg or FFprobe is not available", 6)
-            else:
-                try:
-                    args.have_x264 = ff_have_enc("libx264")
-                    args.have_aac = ff_have_enc("aac")
-                    if not (args.have_x264 and args.have_aac):
-                        t = "disabling video transcoding because FFmpeg lacks the libx264 and/or aac encoder"
-                        self.log("thumb", t, 3)
-                except Exception:
-                    # ffmpeg exists but cannot be run (or the probe itself is
-                    # broken); say so instead of blaming a missing encoder
-                    args.have_x264 = args.have_aac = False
-                    t = "disabling video transcoding because the FFmpeg encoder probe failed:\n%s"
-                    self.log("thumb", t % (min_ex(),), 3)
-                if args.have_x264 and args.have_aac:
-                    args.vt_hwenc = probe_hwenc(self.log)
-                    args.vt_tm = probe_tonemap(self.log)
-                    args.vt_rr = probe_readrate(self.log)
+            # optimistic until _probe_vcode has run; wrong only if ffmpeg
+            # turns out to lack libx264/aac, and that case rebuilds the flags
+            args.have_x264 = args.have_aac = True
 
         # initiate all services to manage
         self.asrv = AuthSrv(self.args, self.log, dargs=self.dargs)
@@ -529,17 +529,7 @@ class SvcHub(object):
         if want_ff and ANYWIN:
             self.log("thumb", "download FFmpeg to fix it:\033[0m " + FFMPEG_URL, 3)
 
-        if not args.no_vcode and (not HAVE_FFMPEG or not HAVE_FFPROBE):
-            # the tools passed the probe above but were rejected afterwards by
-            # _check_toolpaths (binary inside a writable volume, --unsafe-tools
-            # not set); the have_vcode client-flag was already built by AuthSrv
-            # and stays stale-true until the next reload, but tx_browser gates
-            # on these args so the /.hls/ endpoints are gone either way
-            msg = "setting --no-vcode because either FFmpeg or FFprobe is not available"
-            self.log("thumb", msg, c=6)
-            args.no_vcode = True
-            args.have_x264 = args.have_aac = False
-
+        self._probe_vcode()
         if not args.no_vcode and args.have_x264 and args.have_aac:
             self.hlssrv = HlsSrv(self)
 
@@ -1098,6 +1088,47 @@ class SvcHub(object):
         zb = os.environ.get("S6_NOTIFY_FD")
         if zb:
             Daemon(self.s6_notify, "s6-notify", (zb,))
+
+    def _probe_vcode(self) -> None:
+        # on-the-fly video transcoding (HLS): find out for real whether the
+        # local ffmpeg can do it. this runs late on purpose -- after
+        # _check_toolpaths (never execute an ffmpeg we would refuse to use) and
+        # after ThumbSrv (whose cleaner expires the transcode cache). AuthSrv
+        # has already advertised the optimistic have_vcode to clients, so if
+        # the answer turns out to be no, the client flags are rebuilt
+        args = self.args
+        if args.no_vcode:
+            return
+
+        ok = False
+        if not self.thumbsrv:
+            t = "setting --no-vcode because thumbnails are unavailable (the thumbnail service also expires the transcode cache)"
+            self.log("thumb", t, 6)
+        elif not HAVE_FFMPEG or not HAVE_FFPROBE:
+            # rejected by _check_toolpaths (binary inside a writable volume)
+            t = "setting --no-vcode because either FFmpeg or FFprobe is not available"
+            self.log("thumb", t, 6)
+        else:
+            try:
+                ok = ff_have_enc("libx264") and ff_have_enc("aac")
+                if not ok:
+                    t = "disabling video transcoding because FFmpeg lacks the libx264 and/or aac encoder"
+                    self.log("thumb", t, 3)
+            except Exception:
+                # ffmpeg exists but cannot be run (or the probe itself is
+                # broken); say so instead of blaming a missing encoder
+                t = "disabling video transcoding because the FFmpeg encoder probe failed:\n%s"
+                self.log("thumb", t % (min_ex(),), 3)
+
+        args.have_x264 = args.have_aac = ok
+        if ok:
+            args.vt_hwenc = probe_hwenc(self.log)
+            args.vt_tm = probe_tonemap(self.log)
+            args.vt_rr = probe_readrate(self.log)
+            return
+
+        args.no_vcode = True
+        self.asrv.reload(4)  # take have_vcode back from the clients
 
     def _check_toolpaths(self) -> None:
         for vol in self.asrv.vfs.all_vols.values():

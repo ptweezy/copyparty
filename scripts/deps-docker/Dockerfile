@@ -8,6 +8,7 @@ ENV     ver_hashwasm=4.12.0 \
         ver_fontawesome=5.13.0 \
         ver_prism=1.30.0 \
         ver_hlsjs=1.6.16 \
+        sha_hlsjs=d282339fed09a0987d55b49b41430a67d021861c24d33722e75e5ca2e5179c77 \
         ver_zopfli=1.0.3
 
 # versioncheck:
@@ -40,6 +41,7 @@ RUN     mkdir -p /z/dist/no-pk \
         && wget https://github.com/Daninet/hash-wasm/releases/download/v$ver_hashwasm/hash-wasm@$ver_hashwasm.zip -O hash-wasm.zip \
         && wget https://github.com/PrismJS/prism/archive/refs/tags/v$ver_prism.tar.gz -O prism.tgz \
         && wget https://registry.npmjs.org/hls.js/-/hls.js-$ver_hlsjs.tgz -O hlsjs.tgz \
+        && echo "$sha_hlsjs  hlsjs.tgz" | sha256sum -c - \
         && wget https://files.pythonhosted.org/packages/91/47/746287c8962274f73ee25edb3840d80899464bfffbe2c435424c2d60a071/mfusepy-3.1.1.tar.gz -O mfusepy.tgz \
         && (mkdir hash-wasm \
             && cd hash-wasm \

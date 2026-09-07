@@ -183,11 +183,14 @@ class Cfg(Namespace):
         ex = "no_vcode have_x264 have_aac"
         ka.update(**{k: False for k in ex.split()})
 
-        ex = "vt_maxh vt_vq vt_aq vt_seg"
+        ex = "vt_maxh vt_vq vt_aq vt_seg vt_readrate vt_idle vt_maxage vt_jobs"
         ka.update(**{k: 9 for k in ex.split()})
 
         ex = "vt_preset vt_enc vt_tonemap"
         ka.update(**{k: "" for k in ex.split()})
+
+        ex = "vt_exts"
+        ka.update(**{k: set() for k in ex.split()})
 
         ka.update(ka0)
 

@@ -4,6 +4,8 @@ from __future__ import division, print_function, unicode_literals
 
 import os
 import shutil
+import subprocess as sp
+import sys
 import tempfile
 import time
 import unittest
@@ -44,6 +46,11 @@ class FakeRun(object):
 
 def boom(*a, **ka):
     raise OSError("exec format error")
+
+
+class VN(object):
+    def __init__(self, **flags):
+        self.flags = flags
 
 
 class TestHlsFfmpegArgv(unittest.TestCase):
@@ -176,9 +183,6 @@ class TestHlsFfmpegArgv(unittest.TestCase):
         srv.args = args
         srv.hw_bad = set()
 
-        class VN(object):
-            flags = {}
-
         now = time.time()
         cd = os.path.join(tempfile.gettempdir(), "vt", "cd")
         rd = os.path.join(cd, "720")
@@ -201,15 +205,52 @@ class TestHlsFfmpegArgv(unittest.TestCase):
         self.assertEqual(argv[argv.index(b"-output_ts_offset") + 1], b"20.000")
         self.assertEqual(argv[argv.index(b"-start_number") + 1], b"5")
 
-    def test_nseg(self):
+        # the vt_readrate volflag overrides the global (0 = unpaced)
+        argv = srv._session_argv(s, VN(vt_readrate=0), 1920, 1080, 0, "x264")
+        self.assertNotIn(b"-readrate", argv)
+
+    def test_meta_and_ladder(self):
+        args = Cfg(v=[".::r"], a=[], vt_maxh=720)
+        # the ladder = standard rungs below the cap + the cap (source height
+        # clamped to vt_maxh); this is the complete set of valid <height>/ paths
+        self.assertEqual(hls.hls_ladder(args, VN(), 1080), [480, 720])
+        self.assertEqual(hls.hls_ladder(args, VN(vt_maxh=0), 2160), [480, 720, 1080, 1440, 2160])
+        self.assertEqual(hls.hls_ladder(args, VN(vt_maxh=1080), 1080), [480, 720, 1080])
+        self.assertEqual(hls.hls_ladder(args, VN(), 720), [480, 720])
+        self.assertEqual(hls.hls_ladder(args, VN(), 240), [240])
+        self.assertEqual(hls.hls_ladder(args, VN(), 481), [480])  # odd cap rounds down
+
         td = tempfile.mkdtemp(prefix="cpp-hls-")
         try:
-            self.assertEqual(hls.hls_nseg(td, 4.0), 0)  # not probed yet
+            self.assertEqual(hls.hls_meta(td), None)  # not probed yet
+            self.assertEqual(hls.hls_nseg(td, 4.0), 0)
             with open(os.path.join(td, "meta.txt"), "wb") as f:
                 f.write(b"1280 720 0 9.000000")
+            self.assertEqual(hls.hls_meta(td), (1280, 720, 0, 9.0))
             self.assertEqual(hls.hls_nseg(td, 4.0), 3)
             self.assertEqual(hls.hls_nseg(td, 9.0), 1)
             self.assertEqual(hls.hls_nseg(td, 0), 0)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+    def test_hardkill(self):
+        # a reaped session's ffmpeg must die without getting to write its
+        # trailer (which would finalize a truncated segment); _hardkill also
+        # has to work on a process that already exited
+        p = sp.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stderr=sp.PIPE)
+        t0 = time.time()
+        hls._hardkill(p)
+        self.assertIsNotNone(p.poll())
+        self.assertLess(time.time() - t0, 5)
+        hls._hardkill(p)  # idempotent
+
+        td = tempfile.mkdtemp(prefix="cpp-hls-")
+        try:
+            for fn in ("v00003.ts.tmp", "v00002.ts", "index.m3u8"):
+                with open(os.path.join(td, fn), "wb") as f:
+                    f.write(b"x")
+            hls._rm_tmp(td)
+            self.assertEqual(sorted(os.listdir(td)), ["index.m3u8", "v00002.ts"])
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
@@ -258,14 +299,15 @@ class TestHlsHttp(unittest.TestCase):
 
     def setup(self, volflags=""):
         # what svchub hands the http-workers when transcoding is available:
-        # have_x264/have_aac probed true, th_r_ffv normalized to a set[str]
+        # have_x264/have_aac probed true, vt_exts = the transcodable formats
         self.args = Cfg(
             v=[self.vol + "::r" + volflags],
             a=[],
             have_x264=True,
             have_aac=True,
-            th_r_ffv=set(["mp4", "mkv", "webm"]),
+            vt_exts=set(["mp4", "mkv", "webm"]),
             vt_seg=4,
+            vt_maxh=720,
         )
         self.asrv = AuthSrv(self.args, self.log)
         self.conn = tu.VHttpConn(self.args, self.asrv, self.log, b"")
@@ -293,11 +335,23 @@ class TestHlsHttp(unittest.TestCase):
     def test(self):
         self.setup()
 
+        # the client is told which formats it may ask to transcode (js_htm is
+        # the CGV1 blob the browser page embeds; the test harness stubs the
+        # templates, so read it off the volume instead of the rendered page)
+        js = self.asrv.vfs.all_vols[""].js_htm
+        self.assertIn('"have_vcode": true', js)
+        self.assertIn('"vcode_exts": ["mkv", "mp4", "webm"]', js)
+
         # not a video extension / no such file: 404 without touching the hub
-        # (a set-membership test; the old str.split on th_r_ffv gave a 500)
         st, h, b = self.curl("hello.txt/.hls/master.m3u8")
         self.assertEqual(st, 404)
         st, h, b = self.curl("nope.mp4/.hls/master.m3u8")
+        self.assertEqual(st, 404)
+        self.assertEqual(self.broker.asks, [])
+
+        # a segment of a never-probed source is refused (a real player always
+        # fetches the playlists first, which is what probes the source)
+        st, h, b = self.curl("clip.mp4/.hls/720/v00000.ts")
         self.assertEqual(st, 404)
         self.assertEqual(self.broker.asks, [])
 
@@ -319,13 +373,18 @@ class TestHlsHttp(unittest.TestCase):
         self.assertIn(b"\n720/index.m3u8?k=abc\n", b)
         self.assertIn(b"#EXT-X-VERSION:3\n", b)
 
-        # rendition playlist: only served once complete (#EXT-X-ENDLIST)
+        # rendition playlist: only served once complete (#EXT-X-ENDLIST); the
+        # source is not probed yet (no meta.txt) so the height is not checked
+        # here -- the hub validates it against the ladder when generating
         pl = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.000,\nv00000.ts\n#EXTINF:4.000,\nv00001.ts\n#EXTINF:1.000,\nv00002.ts\n#EXT-X-ENDLIST\n"
         self.seed("720/index.m3u8", pl)
         st, h, b = self.curl("clip.mp4/.hls/720/index.m3u8")
         self.assertEqual(st, 200)
         self.assertEqual(b, pl)
         self.assertEqual(self.broker.asks[-1][4:], (-1, 720))
+
+        # the hub probed the source: 1280x720, sdr, 9 seconds
+        self.seed("meta.txt", b"1280 720 0 9.000000")
 
         # a segment: ensure(idx, height) then plain file download
         seg = b"G" * 188 * 40
@@ -335,24 +394,42 @@ class TestHlsHttp(unittest.TestCase):
         self.assertEqual(b, seg)
         self.assertEqual(self.broker.asks[-1][4:], (1, 720))
 
-        # once the source is probed (meta.txt: w h hdr dur), a segment index
-        # past the end of the video is refused up front instead of spawning a
-        # doomed ffmpeg session and waiting for a timeout
+        # renditions that are not on the ladder of a 720p source (480+720) are
+        # refused up front instead of spinning up an ffmpeg session for nothing
         n = len(self.broker.asks)
-        self.seed("meta.txt", b"1280 720 0 9.000000")
+        for url in (
+            "clip.mp4/.hls/999/index.m3u8",
+            "clip.mp4/.hls/1080/index.m3u8",
+            "clip.mp4/.hls/1080/v00000.ts",
+            "clip.mp4/.hls/144/v00000.ts",
+        ):
+            st, h, b = self.curl(url)
+            self.assertEqual(st, 404, url)
+        self.assertEqual(len(self.broker.asks), n)
+        self.seed("480/index.m3u8", pl)
+        st, h, b = self.curl("clip.mp4/.hls/480/index.m3u8")
+        self.assertEqual(st, 200)
+        self.assertEqual(self.broker.asks[-1][4:], (-1, 480))  # on the ladder: asked
+
+        # a segment index past the end of the video is refused too, instead of
+        # spawning a doomed ffmpeg seek and waiting for a timeout
+        n = len(self.broker.asks)
         st, h, b = self.curl("clip.mp4/.hls/720/v00003.ts")
         self.assertEqual(st, 404)
         self.assertEqual(len(self.broker.asks), n)
         st, h, b = self.curl("clip.mp4/.hls/720/v00001.ts")
         self.assertEqual(st, 200)
 
-        # bad shapes never reach tx_hls (RE_HLS is strict)
+        # bad shapes never reach tx_hls (RE_HLS is strict; leading zeros would
+        # make the poll dir differ from the one the hub writes to)
         for url in (
             "clip.mp4/.hls/720/v1.ts",
             "clip.mp4/.hls/720/v00001.mp4",
             "clip.mp4/.hls/index.m3u8",
             "clip.mp4/.hls/720/v00001.tsx",
             "clip.mp4/.hls/72/v00001.ts",
+            "clip.mp4/.hls/0720/index.m3u8",
+            "clip.mp4/.hls/0720/v00001.ts",
         ):
             n = len(self.broker.asks)
             st, h, b = self.curl(url)
@@ -376,6 +453,7 @@ class TestHlsHttp(unittest.TestCase):
         st, h, b = self.curl("clip.mp4/.hls/master.m3u8")
         self.assertEqual(st, 404)
         self.assertEqual(self.broker.asks, [])
+        self.assertIn('"have_vcode": false', self.asrv.vfs.all_vols[""].js_htm)
 
         # and so does a hub without transcoding (no libx264/aac, or --no-vcode)
         self.setup()

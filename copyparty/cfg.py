@@ -173,6 +173,7 @@ def vf_vmap() -> dict[str, str]:
         "vt_tonemap",
         "vt_aq",
         "vt_seg",
+        "vt_readrate",
         "txt_eol",
         "unlist",
         "u2abort",
@@ -349,6 +350,7 @@ flagcats = {
         "vt_tonemap=auto": "tonemap HDR->SDR when transcoding (auto/off)",
         "vt_aq=128": "audio bitrate (kbps) for transcoded video",
         "vt_seg=4": "HLS segment duration in seconds",
+        "vt_readrate=1.5": "pace transcodes to N x realtime; 0=unlimited",
     },
     "handlers\n(better explained in --help-handlers)": {
         "on404=PY": "handle 404s by executing PY file",

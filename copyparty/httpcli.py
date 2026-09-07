@@ -34,7 +34,7 @@ from .__init__ import ANYWIN, PY2, RES, RESM, TYPE_CHECKING, EnvParams, unicode
 from .__version__ import S_VERSION
 from .authsrv import LEELOO_DALLAS, VFS  # typechk
 from .bos import bos
-from .hls import hls_nseg, hls_path
+from .hls import hls_ladder, hls_meta, hls_nseg, hls_path
 from .qrkode import qr2svg, qrgen
 from .star import StreamTar
 from .sutil import StreamArc, gfilter
@@ -179,10 +179,12 @@ ACODE2_FMT = set(["opus", "owa", "caf", "mp3", "flac", "wav"])
 IDX_HTML = set(["index.htm", "index.html"])
 
 # on-the-fly HLS video transcoding; matches and validates the request:
-#   <source-file>/.hls/index.m3u8   -> the playlist
-#   <source-file>/.hls/vNNNNN.ts    -> a segment  (strict name = traversal-safe)
+#   <source-file>/.hls/master.m3u8         -> the abr master playlist
+#   <source-file>/.hls/<height>/index.m3u8 -> one rendition's playlist
+#   <source-file>/.hls/<height>/vNNNNN.ts  -> a segment  (strict = traversal-safe;
+#   heights have no leading zeros so the path always equals str(int(height)))
 RE_HLS = re.compile(
-    r"^(.+)/\.hls/(master\.m3u8|[0-9]{3,4}/index\.m3u8|[0-9]{3,4}/v[0-9]{5}\.ts)$"
+    r"^(.+)/\.hls/(master\.m3u8|[1-9][0-9]{2,3}/index\.m3u8|[1-9][0-9]{2,3}/v[0-9]{5}\.ts)$"
 )
 
 # coolwsd-26.04.2.3 discovery editnew; browser.js wopi_set is superset of this
@@ -7048,9 +7050,10 @@ class HttpCli(object):
         if "dvcode" in vn.flags:
             raise Pebkac(404)
 
-        # th_r_ffv is normalized to a set[str] by svchub (_build_th_fset)
+        # vt_exts = the video formats ffmpeg gets to see (svchub builds it from
+        # --th-r-ffv/--th-ffv-add and publishes it to the client as vcode_exts)
         ext = src.rsplit(".", 1)[-1].lower() if "." in src else ""
-        if ext not in self.args.th_r_ffv:
+        if ext not in self.args.vt_exts:
             raise Pebkac(404)
 
         abspath = vn.dcanonical(src)
@@ -7072,7 +7075,7 @@ class HttpCli(object):
         if not (
             self.can_read or (self.can_get and (use_filekey or "fk" not in vn.flags))
         ):
-            raise Pebkac(403)
+            return self.tx_404(True)  # like upstream file access; honors --vague-403
 
         dbv, vrem = vn.get_dbv(src)
         ptop = dbv.realpath
@@ -7090,13 +7093,27 @@ class HttpCli(object):
         hs, fn = res.split("/", 1)
         height = int(hs)
         rdir = os.path.join(cachedir, hs)
+
+        # once the source has been probed (any playlist request does that),
+        # the only renditions that exist are the rungs of its abr ladder; a
+        # made-up height would spin up a real ffmpeg session for nothing, so
+        # refuse it here instead of asking the hub (which also checks)
+        meta = hls_meta(cachedir)
+        if meta and height not in hls_ladder(self.args, vn, meta[1]):
+            raise Pebkac(404, "no such rendition")
+
         if fn == "index.m3u8":
             return self._tx_hls_playlist(ptop, vrem, mtime, rdir, height)
 
-        # a segment past the end of the VOD playlist can never exist; refuse it
-        # up front instead of starting an ffmpeg session that seeks past EOF and
-        # then waiting for a segment that never appears (only possible once the
-        # source has been probed, which any playlist request will have done)
+        # a real player always fetches the playlists before any segment, so a
+        # segment of a never-probed source is bogus (or the cache expired
+        # underneath a stale player, which then reloads the master)
+        if not meta:
+            raise Pebkac(404, "request the playlist first")
+
+        # a segment past the end of the VOD playlist can never exist either;
+        # refuse it up front instead of starting an ffmpeg session that seeks
+        # past EOF and then waiting for a segment that never appears
         idx = int(fn[1:6])
         seg = float(vn.flags.get("vt_seg", self.args.vt_seg)) or 4.0
         nseg = hls_nseg(cachedir, seg)

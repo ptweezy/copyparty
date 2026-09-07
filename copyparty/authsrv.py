@@ -2488,7 +2488,7 @@ class AuthSrv(object):
                 if k in vol.flags:
                     vol.flags[k] = int(vol.flags[k])
 
-            zs = "aconvt convt tail_fd tail_rate tail_tmax vt_seg"
+            zs = "aconvt convt tail_fd tail_rate tail_tmax vt_seg vt_readrate"
             for k in zs.split():
                 if k in vol.flags:
                     vol.flags[k] = float(vol.flags[k])
@@ -3317,6 +3317,7 @@ class AuthSrv(object):
                     and getattr(self.args, "have_aac", False)
                     and "dvcode" not in vf
                 ),
+                "vcode_exts": sorted(getattr(self.args, "vt_exts", None) or []),
                 "have_shr": self.args.shr,
                 "shr_who": vf["shr_who"],
                 "have_zip": not self.args.no_zip,

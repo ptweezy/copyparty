@@ -40,23 +40,42 @@ window.baguetteBox = (function () {
             /^[^?]+\.(a?png|avif|bmp|gif|hei[cf]s?|jfif|jpe?g|jxl|svg|tiff?|webp)(\?|$)/i :
             /^[^?]+\.(a?png|avif|bmp|gif|jfif|jpe?g|jxl|svg|tiff?|webp)(\?|$)/i,
         // which files open as a <video>; when the server can transcode we also
-        // accept containers no browser can play, since HLS is the fallback
-        // (have_vcode comes from window.CGV via util.js, which loads before us)
-        re_v = window.have_vcode ?
-            /^[^?]+\.(webm|mkv|mp4|m4v|mov|avi|wmv|flv|ts|m2ts|mts|mpe?g|vob|ogm|rm|rmvb|divx|asf|3gp)(\?|$)/i :
-            /^[^?]+\.(webm|mkv|mp4|m4v|mov)(\?|$)/i,
+        // accept every container it will transcode (window.vcode_exts = the
+        // server's --th-r-ffv set, published next to have_vcode; both arrive
+        // via util.js's CGV1 import, which loads before us), since HLS is the
+        // fallback for anything the browser cannot play by itself
+        vc_exts = window.have_vcode ? (window.vcode_exts || []) : [],
+        vc_re = function (exts, pfx) {
+            // regex for a url whose extension is one of exts; never matches
+            // when exts is empty (so a missing server list disables a rule)
+            var ok = [];
+            for (var a = 0; a < exts.length; a++)
+                if (/^[a-z0-9]+$/i.test(exts[a]))
+                    ok.push(exts[a]);
+            return ok.length ? new RegExp(pfx + '\\.(' + ok.join('|') + ')(\\?|$)', 'i') : /(?!)/;
+        },
+        vc_has = function (exts) {
+            // the subset of exts that the server will actually transcode; the
+            // rules below must never send the server a container it refuses
+            var ret = [];
+            for (var a = 0; a < exts.length; a++)
+                if (has(vc_exts, exts[a]))
+                    ret.push(exts[a]);
+            return ret;
+        },
+        re_v = vc_re(['webm', 'mkv', 'mp4', 'm4v', 'mov'].concat(vc_exts), '^[^?]+'),
         // legacy containers no browser can demux natively; transcode these
         // upfront instead of waiting for a native failure; modern/ambiguous
         // containers (mkv, ts, mp4, mpg, 3gp, ...) are deliberately absent; we
         // try those natively first and fall back only on an actual failure, so
         // we never transcode something the browser could have played
-        re_vhls = /\.(avi|wmv|flv|vob|ogm|rm|rmvb|divx|asf)(\?|$)/i,
+        re_vhls = vc_re(vc_has(['avi', 'wmv', 'flv', 'vob', 'ogm', 'rm', 'rmvb', 'divx', 'asf']), ''),
         // containers we play natively but where chrome can fail to decode the
         // video track silently (no 'error' event); for these, a loadedmetadata
         // with videoWidth==0 means the codec is unsupported, so transcode;
         // mp4/mov/webm/m4v are excluded since videoWidth==0 there is usually a
         // legit audio-only file that plays fine as-is
-        re_vck = /\.(mkv|ts|m2ts|mts|mpe?g|3gp)(\?|$)/i,
+        re_vck = vc_re(vc_has(['mkv', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg', '3gp']), ''),
         re_cbz = /^[^?]+\.(cbz)(\?|$)/i,
         anims = ['slideIn', 'fadeIn', 'none'],
         data = {},  // all galleries
@@ -1048,12 +1067,34 @@ window.baguetteBox = (function () {
             if (image.hls)
                 try { image.hls.destroy(); } catch (ex) { }
 
-            // capLevelToPlayerSize keeps the auto-picked rendition no larger than the video element
-            var h = image.hls = new window.Hls({ capLevelToPlayerSize: true });
+            // capLevelToPlayerSize keeps the auto-picked rendition no larger
+            // than the video element. enableWorker=false: the default --csp-ui
+            // (worker-src 'self') refuses the blob: transmuxer worker hls.js
+            // would otherwise try to spawn, so this only skips the CSP error
+            // in the console; the transmuxing ran on the main thread anyway
+            var h = image.hls = new window.Hls({ capLevelToPlayerSize: true, enableWorker: false });
             h.on(window.Hls.Events.MANIFEST_PARSED, function () {
                 var p = image.play();
                 if (p && p.catch)
                     p.catch(function () { });
+            });
+            // a fatal error (the server refused or timed out: 404/503 on the
+            // playlist or a segment) never reaches the <video> 'error' event,
+            // so without this the spinner would just sit there forever
+            h.on(window.Hls.Events.ERROR, function (e, d) {
+                if (!d || !d.fatal)
+                    return;
+                var why = d.details || d.type || 'error';
+                if (d.response && d.response.code)
+                    why += ' (HTTP ' + d.response.code + ')';
+                console.log('bb-vcode: transcode failed: ' + why);
+                try { h.destroy(); } catch (ex) { }
+                if (image.hls === h)
+                    image.hls = null;
+                if (image === vid())
+                    toast.err(20, 'video transcode failed: ' + esc(why) + '\n\nswitching back to the original file', 'bb-hls');
+                if (image.rawsrc && image.vsrc_now == 't')
+                    native_keep_pos(image);  // hls_tried stays set: no bounce back into the transcode
             });
             h.loadSource(hls_url);
             h.attachMedia(image);

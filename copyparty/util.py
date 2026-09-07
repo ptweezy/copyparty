@@ -535,7 +535,7 @@ application 7z=x-7z-compressed tar=x-tar bz2=x-bzip2 gz=gzip rar=x-rar-compresse
 application msi=x-ms-installer cab=vnd.ms-cab-compressed rpm=x-rpm crx=x-chrome-extension
 application epub=epub+zip mobi=x-mobipocket-ebook lit=x-ms-reader rss=rss+xml atom=atom+xml torrent=x-bittorrent
 application p7s=pkcs7-signature dcm=dicom shx=vnd.shx shp=vnd.shp dbf=x-dbf gml=gml+xml gpx=gpx+xml amf=x-amf
-application swf=x-shockwave-flash m3u=vnd.apple.mpegurl m3u8=vnd.apple.mpegurl db3=vnd.sqlite3 sqlite=vnd.sqlite3
+application swf=x-shockwave-flash m3u8=vnd.apple.mpegurl m3u=vnd.apple.mpegurl db3=vnd.sqlite3 sqlite=vnd.sqlite3
 image jpg=jpeg xpm=x-xpixmap psd=vnd.adobe.photoshop jpf=jpx tif=tiff ico=x-icon djvu=vnd.djvu
 image heics=heic-sequence heifs=heif-sequence hdr=vnd.radiance svg=svg+xml
 image arw=x-sony-arw cr2=x-canon-cr2 crw=x-canon-crw dcr=x-kodak-dcr dng=x-adobe-dng erf=x-epson-erf

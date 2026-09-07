@@ -74,7 +74,8 @@ EXTS_SPEC_SAFE = set("aif aiff flac mp3 opus wav".split())
 PTN_TS = re.compile("^-?[0-9a-f]{8,10}$")
 
 # name of an HLS cache entry directory: <fnhash-b64(24)>.<mtime-hex>
-PTN_VT = re.compile(r"^[A-Za-z0-9_-]{24}\.[0-9a-f]+$")
+# (mtime may be negative for pre-1970 files, like PTN_TS above)
+PTN_VT = re.compile(r"^[A-Za-z0-9_-]{24}\.-?[0-9a-f]+$")
 
 # for n in {1..100}; do rm -rf /home/ed/Pictures/wp/.hist/th/ ; python3 -m copyparty -qv /home/ed/Pictures/wp/::r --th-no-webp --th-qv $n --th-dec pil >/dev/null 2>&1 & p=$!; printf '\033[A\033[J%3d ' $n; while true; do sleep 0.1; curl -s 127.1:3923 >/dev/null && break; done; curl -s '127.1:3923/?tar=j' >/dev/null ; cat /home/ed/Pictures/wp/.hist/th/1n/bs/1nBsjDetfie1iDq3y2D4YzF5/*.* | wc -c; kill $p; wait >/dev/null 2>&1; done
 # filesize-equivalent, not quality (ff looks much shittier)

@@ -305,7 +305,8 @@ necho() {
 	necho collecting source
 	echo
 	[ $clean ] && {
-		(cd .. && git archive hovudstraum >tar) && tar -xf ../tar copyparty
+		# sloppyparty: HEAD, not hovudstraum (that branch is pristine upstream here)
+		(cd .. && git archive HEAD >tar) && tar -xf ../tar copyparty
 		(cd .. && tar -cf tar copyparty/web/deps) && tar -xf ../tar
 	}
 	[ $clean ] || {
@@ -360,12 +361,16 @@ necho() {
 	rm -rf ../copyparty/web/deps
 	cp -pR copyparty/web/deps ../copyparty/web
 
-	# hls.js is fork-specific and not in the upstream webdeps just fetched, so
-	# pull it separately (best-effort) into both the staged and source trees
+	rm x.py
+}
+
+# hls.js is fork-specific and not part of the upstream webdeps, so fetch it
+# separately whenever dl-wd is requested (idempotent: no-op when present), into
+# both the staged and the source tree. runs regardless of whether the upstream
+# deps were just downloaded or already there, so a CI retry can recover it
+[ $dl_wd ] && {
 	bash ../packaging/ci/fetch-hls.sh copyparty/web/deps || true
 	bash ../packaging/ci/fetch-hls.sh ../copyparty/web/deps || true
-
-	rm x.py
 }
 
 [ -e copyparty/web/deps/mini-fa.woff ] || [ $ign_wd ] || { berr <<'EOF'

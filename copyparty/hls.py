@@ -4,6 +4,7 @@ from __future__ import print_function, unicode_literals
 import hashlib
 import math
 import os
+import signal
 import subprocess as sp
 import threading
 import time
@@ -12,15 +13,15 @@ from queue import Full, Queue
 
 from .__init__ import ANYWIN, MACOS, TYPE_CHECKING, WINDOWS
 from .bos import bos
-from .mtag import HAVE_FFMPEG, bwrap, ffprobe
+from .mtag import HAVE_FFMPEG, TH_BWRAP, bwrap, bwrap_fail, ffprobe
 from .util import (
+    HAVE_PSUTIL,
     NICEB,
     SCWD,
     Daemon,
     afsenc,
     atomic_move,
     fsenc,
-    killtree,
     min_ex,
     runcmd,
     ub64enc,
@@ -249,6 +250,77 @@ def probe_readrate(log: Any) -> int:
     return 0
 
 
+def _hardkill(p: Any) -> None:
+    # stop a session's ffmpeg WITHOUT letting it finish: SIGTERM (what
+    # util.killtree sends first) is a graceful stop for ffmpeg, which then
+    # writes its trailer, and the hls muxer's trailer renames the half-done
+    # .tmp segment into a final v%05d.ts -- which we would then cache and
+    # serve as if it were complete. SIGKILL leaves only the .tmp behind.
+    # with --th-bwrap p is the sandbox, so take out its children as well
+    try:
+        if HAVE_PSUTIL:
+            import psutil
+
+            for c in psutil.Process(p.pid).children(recursive=True):
+                try:
+                    c.kill()
+                except Exception:
+                    pass
+        elif not ANYWIN:
+            pids = []
+            chk = [p.pid]
+            while chk:
+                pid, chk = chk[0], chk[1:]
+                if pid != p.pid:
+                    pids.append(pid)
+                _, t, _ = runcmd(["pgrep", "-P", str(pid)])
+                chk += [int(x) for x in t.strip().split("\n") if x]
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        p.kill()
+    except Exception:
+        pass
+    try:
+        p.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _rm_tmp(rdir: str) -> None:
+    # leftovers of a hard-killed ffmpeg (hls temp_file segments in progress)
+    try:
+        for fn in os.listdir(rdir):
+            if fn.endswith(".tmp"):
+                try:
+                    os.unlink(os.path.join(rdir, fn))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _drain(p: Any, lines: list[str]) -> None:
+    # keep the tail of ffmpeg's stderr (-v error, so only actual problems);
+    # runs in its own thread so a chatty ffmpeg never blocks on a full pipe
+    try:
+        for ln in iter(p.stderr.readline, b""):
+            lines.append(ln.decode("utf-8", "replace").rstrip())
+            if len(lines) > 40:
+                del lines[0]
+    except Exception:
+        pass
+    try:
+        p.stderr.close()
+    except Exception:
+        pass
+
+
 def is_hdr(streams: list) -> bool:
     # true if the first video stream is HDR (PQ/HLG transfer or BT.2020 gamut)
     for s in streams:
@@ -277,16 +349,38 @@ def hls_path(histpath: str, rem: str, mtime: float) -> str:
     return "%s/vt/%s/%s.%x" % (histpath, rd, fn, int(mtime))
 
 
-def hls_nseg(cachedir: str, seg: float) -> int:
-    # number of segments in the VOD playlists of this cache entry, or 0 when
-    # the source has not been probed yet (meta.txt is written by HlsSrv._meta
-    # and reused by every playlist/segment; same formula as _gen_playlist)
+def hls_meta(cachedir: str) -> Optional[tuple[int, int, int, float]]:
+    # (width, height, is_hdr, duration) of the source as probed by HlsSrv._meta
+    # into <cachedir>/meta.txt; None until a playlist has been requested once.
+    # the http-workers use it to refuse impossible requests without asking the
+    # hub (unknown rendition heights, segments past the end of the video)
     try:
         with open(os.path.join(cachedir, "meta.txt"), "rb") as f:
-            dur = float(f.read().decode("utf-8").split(" ")[3])
-        return int(math.ceil(dur / seg)) if dur > 0 and seg > 0 else 0
+            a = f.read().decode("utf-8").split(" ")
+            return int(a[0]), int(a[1]), int(a[2]), float(a[3])
     except Exception:
+        return None
+
+
+def hls_ladder(args: Any, vn: "VFS", resh: int) -> list[int]:
+    # abr rendition heights for a source of this height: standard rungs below
+    # the cap, plus the cap itself (source height, clamped to vt_maxh); this
+    # is the complete set of <height>/ paths that exist for a video
+    maxh = int(vn.flags.get("vt_maxh", args.vt_maxh))
+    cap = min(resh, maxh) if maxh else resh
+    cap -= cap % 2
+    rungs = [h for h in (480, 720, 1080, 1440, 2160) if h < cap]
+    rungs.append(cap)
+    return sorted(set(h for h in rungs if h >= 144))
+
+
+def hls_nseg(cachedir: str, seg: float) -> int:
+    # number of segments in the VOD playlists of this cache entry, or 0 when
+    # the source has not been probed yet (same formula as _gen_playlist)
+    meta = hls_meta(cachedir)
+    if not meta or meta[3] <= 0 or seg <= 0:
         return 0
+    return int(math.ceil(meta[3] / seg))
 
 
 def hls_cfg(args: Any, vn: "VFS") -> str:
@@ -322,6 +416,8 @@ class _HlsSess(object):
         self.last_want = now     # last time a segment was requested (idle reap)
         self.proc: Optional[Any] = None  # ffmpeg Popen once spawned
         self.dead = False        # set by reap/seek/shutdown; monitor then kills
+        self.prev: Optional["_HlsSess"] = None  # session we replaced (seek)
+        self.gone = threading.Event()  # set once our ffmpeg has fully exited
 
 
 # manages on-the-fly HLS video transcodes; lives in the hub process.
@@ -365,10 +461,7 @@ class HlsSrv(object):
                 s.dead = True
             self.sessions.clear()
         for p in procs:
-            try:
-                killtree(p.pid)
-            except Exception:
-                pass
+            _hardkill(p)
         for _ in range(self.nthr):
             try:
                 self.q.put_nowait(None)
@@ -460,12 +553,9 @@ class HlsSrv(object):
         # source dims + hdr flag + duration; probed once and cached to meta.txt
         # so the master, every rendition playlist, and each segment reuse it
         mp = os.path.join(cachedir, "meta.txt")
-        try:
-            with open(mp, "rb") as f:
-                a = f.read().decode("utf-8").split(" ")
-                return int(a[0]), int(a[1]), int(a[2]), float(a[3])
-        except Exception:
-            pass
+        meta = hls_meta(cachedir)
+        if meta:
+            return meta
 
         abspath = os.path.join(ptop, rem)
         to = int(vn.flags.get("convt", self.args.th_convt) or 60)
@@ -498,14 +588,7 @@ class HlsSrv(object):
         return resw, resh, hdr, dur
 
     def _ladder(self, vn: "VFS", resh: int) -> list[int]:
-        # abr rendition heights for a source of this height: standard rungs below
-        # the cap, plus the cap itself (source height, clamped to vt_maxh)
-        maxh = int(vn.flags.get("vt_maxh", self.args.vt_maxh))
-        cap = min(resh, maxh) if maxh else resh
-        cap -= cap % 2
-        rungs = [h for h in (480, 720, 1080, 1440, 2160) if h < cap]
-        rungs.append(cap)
-        return sorted(set(h for h in rungs if h >= 144))
+        return hls_ladder(self.args, vn, resh)
 
     def _gen_master(self, cachedir: str, ptop: str, rem: str, mtime: float) -> None:
         vn = self._vn(ptop)
@@ -533,7 +616,10 @@ class HlsSrv(object):
     ) -> None:
         vn = self._vn(ptop)
         seg = float(vn.flags.get("vt_seg", self.args.vt_seg)) or 4.0
-        _, _, _, dur = self._meta(cachedir, ptop, rem, vn)
+        _, resh, _, dur = self._meta(cachedir, ptop, rem, vn)
+        if height not in self._ladder(vn, resh):
+            t = "rendition %dp is not in the ladder of this %dp source"
+            raise Exception(t % (height, resh))
 
         rdir = os.path.join(cachedir, str(height))
         chmod = bos.MKD_700 if self.args.free_umask else bos.MKD_755
@@ -570,6 +656,7 @@ class HlsSrv(object):
         skey = "%s\n%d" % (cachedir, height)
         now = time.time()
         with self.mutex:
+            prev = None
             s = self.sessions.get(skey)
             if s and not s.dead:
                 # a session already covers this rendition; keep riding it unless
@@ -580,14 +667,17 @@ class HlsSrv(object):
                     s.last_want = now
                     return
                 self._reap(skey, s)
+                prev = s
             elif s:
                 self._reap(skey, s)
+                prev = s
 
             if len(self.sessions) >= self.nthr:
                 self._reap_lru()
 
             rdir = os.path.join(cachedir, str(height))
             s = _HlsSess(cachedir, rdir, ptop, rem, mtime, height, idx, now)
+            s.prev = prev  # its ffmpeg may still be writing into rdir
             self.sessions[skey] = s
             Daemon(self._run_session, "hls-s%d-%d" % (height, idx), (skey, s))
 
@@ -620,41 +710,64 @@ class HlsSrv(object):
 
     def _run_session(self, skey: str, s: "_HlsSess") -> None:
         # session thread: probe once, spawn one forward-running ffmpeg (hls
-        # muxer), then babysit it until it exits, is reaped, or the hub stops
+        # muxer), then babysit it until it exits, is reaped, or the hub stops.
+        # a runtime failure of a hw encoder gets one retry with libx264
         p = None
+        killed = False
         try:
             vn = self._vn(s.ptop)
             resw, resh, hdr, _ = self._meta(s.cachedir, s.ptop, s.rem, vn)
+            if s.height not in self._ladder(vn, resh):
+                t = "rendition %dp is not in the ladder of this %dp source"
+                raise Exception(t % (s.height, resh))
             chmod = bos.MKD_700 if self.args.free_umask else bos.MKD_755
             bos.makedirs(s.rdir, vf=chmod)
             _, oh = self._out_dims(resw, resh, s.height)
             enc = self._pick_enc(vn, oh)
-            argv = self._session_argv(s, vn, resw, resh, hdr, enc)
-            if s.dead:
-                return
-
-            p = self._spawn(argv)
-            with self.mutex:
-                if s.dead:
-                    killtree(p.pid)
+            if s.prev is not None:
+                # (seek) the session we replaced may still be encoding into
+                # this rdir; wait until its ffmpeg is really gone so the two
+                # never write the same .tmp segment
+                s.prev.gone.wait(10)
+                s.prev = None
+            while True:
+                argv = self._session_argv(s, vn, resw, resh, hdr, enc)
+                if s.dead or self.stopping:
                     return
-                s.proc = p
 
-            while not self.stopping:
-                if p.poll() is not None:
-                    if p.returncode and enc != "x264":
-                        # hw encoder died at runtime; blacklist hub-wide so the
-                        # restart (and other streams) fall back to software x264
-                        self.log("hw-encoder %s failed rc=%d, disabling it"
-                                 % (enc, p.returncode), 3)
-                        with self.mutex:
-                            self.hw_bad.add(enc)
-                    break
-                if s.dead:
-                    killtree(p.pid)
-                    break
-                _poke_dirs(s.rdir)  # keep the cache alive while encoding
-                time.sleep(0.3)
+                p = self._spawn(argv)
+                with self.mutex:
+                    if s.dead:
+                        killed = True
+                        _hardkill(p)
+                        return
+                    s.proc = p
+
+                rc = self._babysit(s, p)
+                if rc is None:
+                    killed = True  # reaped / seeked away / shutdown
+                    return
+                if not rc:
+                    return  # reached EOF; the trailer finalized the last segment
+
+                serr = "\n".join(p.errlog)[-2000:]  # type: ignore
+                t = "ffmpeg failed (rc=%d) for %r h%d enc=%s:\n%s"
+                self.log(t % (rc, s.rem, s.height, enc, serr or "(no stderr)"), 3)
+                if TH_BWRAP:
+                    bwrap_fail(serr)
+                if enc == "x264":
+                    return
+                if not serr or ENC2FF[enc] in serr:
+                    # the hw encoder itself is broken (no gpu/driver, busy,
+                    # stub build); blacklist it hub-wide so other streams
+                    # skip it too. anything else (corrupt source, disk full)
+                    # is not the encoder's fault, so it stays available
+                    t = "hw-encoder %s failed at runtime; disabling it"
+                    self.log(t % (enc,), 3)
+                    with self.mutex:
+                        self.hw_bad.add(enc)
+                enc = "x264"  # redo this session in software
+                p = None
         except Exception:
             self.log("hls session failed for %r h%d:\n%s"
                      % (s.rem, s.height, min_ex()), 3)
@@ -662,13 +775,32 @@ class HlsSrv(object):
             if p is not None:
                 try:
                     if p.poll() is None:
-                        killtree(p.pid)
+                        killed = True
+                        _hardkill(p)
                 except Exception:
                     pass
+            if killed:
+                _rm_tmp(s.rdir)
             with self.mutex:
                 s.dead = True
                 if self.sessions.get(skey) is s:
                     del self.sessions[skey]
+            s.gone.set()
+
+    def _babysit(self, s: "_HlsSess", p: Any) -> Optional[int]:
+        # wait for the session's ffmpeg; returns its exit code, or None if we
+        # had to kill it (session reaped/seeked away, or hub shutting down)
+        while not self.stopping:
+            rc = p.poll()
+            if rc is not None:
+                return rc
+            if s.dead:
+                _hardkill(p)
+                return None
+            _poke_dirs(s.rdir)  # keep the cache alive while encoding
+            time.sleep(0.3)
+        _hardkill(p)
+        return None
 
     def _spawn(self, argv: list[bytes]) -> Any:
         # non-blocking ffmpeg launch (we keep the handle to kill on seek/idle);
@@ -681,7 +813,9 @@ class HlsSrv(object):
             ka["creationflags"] = 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
         elif NICEB:
             argv = [NICEB] + argv
-        p = sp.Popen(argv, stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=SCWD, **ka)
+        p = sp.Popen(argv, stdout=sp.DEVNULL, stderr=sp.PIPE, cwd=SCWD, **ka)
+        p.errlog = []  # type: ignore
+        Daemon(_drain, "hls-err", (p, p.errlog))  # type: ignore
         if not ANYWIN and not MACOS:
             try:
                 with open("/proc/%d/oom_score_adj" % (p.pid,), "wb") as f:

@@ -59,7 +59,7 @@ rls_dir="$tmp/copyparty-$ver"
 mkdir "$rls_dir"
 
 echo ">>> export from git"
-git archive hovudstraum | tar -xC "$rls_dir"
+git archive HEAD | tar -xC "$rls_dir"  # sloppyparty: not hovudstraum (pristine upstream here)
 
 echo ">>> export untracked deps"
 tar -c copyparty/web/deps | tar -xC "$rls_dir"
