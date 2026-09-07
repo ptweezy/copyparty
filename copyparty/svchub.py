@@ -421,12 +421,19 @@ class SvcHub(object):
                 args.no_vcode = True
                 self.log("thumb", "setting --no-vcode because FFmpeg or FFprobe is not available", 6)
             else:
-                args.have_x264 = ff_have_enc("libx264")
-                args.have_aac = ff_have_enc("aac")
-                if not (args.have_x264 and args.have_aac):
-                    t = "disabling video transcoding because FFmpeg lacks the libx264 and/or aac encoder"
-                    self.log("thumb", t, 3)
-                else:
+                try:
+                    args.have_x264 = ff_have_enc("libx264")
+                    args.have_aac = ff_have_enc("aac")
+                    if not (args.have_x264 and args.have_aac):
+                        t = "disabling video transcoding because FFmpeg lacks the libx264 and/or aac encoder"
+                        self.log("thumb", t, 3)
+                except Exception:
+                    # ffmpeg exists but cannot be run (or the probe itself is
+                    # broken); say so instead of blaming a missing encoder
+                    args.have_x264 = args.have_aac = False
+                    t = "disabling video transcoding because the FFmpeg encoder probe failed:\n%s"
+                    self.log("thumb", t % (min_ex(),), 3)
+                if args.have_x264 and args.have_aac:
                     args.vt_hwenc = probe_hwenc(self.log)
                     args.vt_tm = probe_tonemap(self.log)
                     args.vt_rr = probe_readrate(self.log)
@@ -521,6 +528,17 @@ class SvcHub(object):
 
         if want_ff and ANYWIN:
             self.log("thumb", "download FFmpeg to fix it:\033[0m " + FFMPEG_URL, 3)
+
+        if not args.no_vcode and (not HAVE_FFMPEG or not HAVE_FFPROBE):
+            # the tools passed the probe above but were rejected afterwards by
+            # _check_toolpaths (binary inside a writable volume, --unsafe-tools
+            # not set); the have_vcode client-flag was already built by AuthSrv
+            # and stays stale-true until the next reload, but tx_browser gates
+            # on these args so the /.hls/ endpoints are gone either way
+            msg = "setting --no-vcode because either FFmpeg or FFprobe is not available"
+            self.log("thumb", msg, c=6)
+            args.no_vcode = True
+            args.have_x264 = args.have_aac = False
 
         if not args.no_vcode and args.have_x264 and args.have_aac:
             self.hlssrv = HlsSrv(self)

@@ -15,6 +15,7 @@ from .bos import bos
 from .mtag import HAVE_FFMPEG, bwrap, ffprobe
 from .util import (
     NICEB,
+    SCWD,
     Daemon,
     afsenc,
     atomic_move,
@@ -40,28 +41,37 @@ X264_PRESETS = set(
 )
 
 
+def ffmpeg_bin() -> bytes:
+    # mtag.HAVE_FFMPEG is an argv-vector (a list holding the absolute path of
+    # the binary, or empty when unavailable), not a bare path, and svchub may
+    # empty it at runtime (--unsafe-tools check). resolve it on every use so a
+    # cached stale path can never be spawned; callers that want a soft "not
+    # available" answer must check HAVE_FFMPEG for truthiness before calling
+    if not HAVE_FFMPEG:
+        raise Exception("ffmpeg is not available")
+    return HAVE_FFMPEG[0]
+
+
+def _ff_help(topic: str) -> str:
+    # stdout+stderr of "ffmpeg -h <topic>"; raises if ffmpeg cannot be run
+    cmd = [ffmpeg_bin(), b"-hide_banner", b"-h", topic.encode("ascii")]
+    _, so, se = runcmd(cmd, cwd=SCWD, timeout=10)
+    return (so or "") + (se or "")
+
+
 def ff_have_enc(name: str) -> bool:
-    # true if the local ffmpeg has this encoder
+    # true if the local ffmpeg has this encoder; raises if ffmpeg is broken
+    # (the caller decides whether that is fatal for the feature)
     if not HAVE_FFMPEG:
         return False
-    try:
-        cmd = [HAVE_FFMPEG, b"-hide_banner", b"-h", ("encoder=" + name).encode("ascii")]
-        _, so, se = runcmd(cmd, timeout=10)
-        return ("Encoder " + name) in ((so or "") + (se or ""))
-    except Exception:
-        return False
+    return ("Encoder " + name) in _ff_help("encoder=" + name)
 
 
 def ff_have_filter(name: str) -> bool:
-    # true if the local ffmpeg has this filter
+    # true if the local ffmpeg has this filter; raises if ffmpeg is broken
     if not HAVE_FFMPEG:
         return False
-    try:
-        cmd = [HAVE_FFMPEG, b"-hide_banner", b"-h", ("filter=" + name).encode("ascii")]
-        _, so, se = runcmd(cmd, timeout=10)
-        return ("Filter " + name) in ((so or "") + (se or ""))
-    except Exception:
-        return False
+    return ("Filter " + name) in _ff_help("filter=" + name)
 
 
 # abstract name -> ffmpeg h264 encoder; order = auto-preference (first validated
@@ -123,17 +133,14 @@ def ff_test_enc(ffenc: str) -> bool:
     # build stub) -- prove it works by encoding one lavfi frame to null
     if not HAVE_FFMPEG:
         return False
-    try:
-        cmd = [
-            HAVE_FFMPEG, b"-nostdin", b"-v", b"error", b"-hide_banner",
-            b"-f", b"lavfi", b"-i", b"color=c=black:s=64x64:d=1",
-            b"-frames:v", b"1", b"-c:v", ffenc.encode("ascii"),
-            b"-f", b"null", b"-",
-        ]
-        rc, _, _ = runcmd(cmd, timeout=15)
-        return rc == 0
-    except Exception:
-        return False
+    cmd = [
+        ffmpeg_bin(), b"-nostdin", b"-v", b"error", b"-hide_banner",
+        b"-f", b"lavfi", b"-i", b"color=c=black:s=64x64:d=1",
+        b"-frames:v", b"1", b"-c:v", ffenc.encode("ascii"),
+        b"-f", b"null", b"-",
+    ]
+    rc, _, _ = runcmd(cmd, cwd=SCWD, timeout=15)
+    return rc == 0
 
 
 def probe_hwenc(log: Any) -> list[str]:
@@ -141,9 +148,13 @@ def probe_hwenc(log: Any) -> list[str]:
     # frame; result is cached on the hub (args.vt_hwenc), like args.have_x264
     ret = []
     for abbr, ffenc in HWENC:
-        if ff_have_enc(ffenc) and ff_test_enc(ffenc):
-            ret.append(abbr)
-            log("hls", "hw-encoder ok: %s (%s)" % (abbr, ffenc), 6)
+        try:
+            if ff_have_enc(ffenc) and ff_test_enc(ffenc):
+                ret.append(abbr)
+                log("hls", "hw-encoder ok: %s (%s)" % (abbr, ffenc), 6)
+        except Exception as ex:
+            # a broken probe only loses this one encoder (x264 is unaffected)
+            log("hls", "hw-encoder probe failed for %s: %r" % (ffenc, ex), 6)
     return ret
 
 
@@ -188,20 +199,20 @@ def probe_tonemap(log: Any) -> str:
            ":colorspace=bt2020nc")
     filt = {"placebo": "libplacebo", "opencl": "tonemap_opencl", "zscale": "zscale"}
     for m in _TM_PREF:
-        if not ff_have_filter(filt[m]):
-            continue
         try:
-            cmd = [HAVE_FFMPEG, b"-nostdin", b"-v", b"error", b"-hide_banner"]
+            if not ff_have_filter(filt[m]):
+                continue
+            cmd = [ffmpeg_bin(), b"-nostdin", b"-v", b"error", b"-hide_banner"]
             cmd += tm_devargs(m)
             cmd += [b"-f", b"lavfi", b"-i", src.encode("ascii"),
                     b"-vf", tm_vf(m, 64, 64).encode("ascii"),
                     b"-frames:v", b"1", b"-f", b"null", b"-"]
-            rc, _, _ = runcmd(cmd, timeout=20)
+            rc, _, _ = runcmd(cmd, cwd=SCWD, timeout=20)
             if rc == 0:
                 log("hls", "hdr tonemap method: %s" % (m,), 6)
                 return m
-        except Exception:
-            pass
+        except Exception as ex:
+            log("hls", "tonemap probe failed for %s: %r" % (m, ex), 6)
     log("hls", "no working HDR tonemap filter; HDR transcodes will look "
         "washed-out (need ffmpeg with libplacebo/opencl/zimg)", 3)
     return ""
@@ -215,23 +226,24 @@ def probe_readrate(log: Any) -> int:
     # it to ~realtime and use the initial burst to fill the player's start buffer
     if not HAVE_FFMPEG:
         return 0
-    pre = [HAVE_FFMPEG, b"-nostdin", b"-v", b"error", b"-hide_banner"]
     src = [b"-f", b"lavfi", b"-i", b"color=c=black:s=64x64:d=0.2"]
     tail = [b"-frames:v", b"1", b"-f", b"null", b"-"]
     try:
+        pre = [ffmpeg_bin(), b"-nostdin", b"-v", b"error", b"-hide_banner"]
         rc, _, _ = runcmd(
             pre + [b"-readrate", b"2", b"-readrate_initial_burst", b"1"] + src + tail,
+            cwd=SCWD,
             timeout=15,
         )
         if rc == 0:
             log("hls", "realtime-pacing: readrate + initial-burst", 6)
             return 2
-        rc, _, _ = runcmd(pre + [b"-readrate", b"2"] + src + tail, timeout=15)
+        rc, _, _ = runcmd(pre + [b"-readrate", b"2"] + src + tail, cwd=SCWD, timeout=15)
         if rc == 0:
             log("hls", "realtime-pacing: readrate (no initial-burst)", 6)
             return 1
-    except Exception:
-        pass
+    except Exception as ex:
+        log("hls", "readrate probe failed: %r" % (ex,), 6)
     log("hls", "ffmpeg has no -readrate; transcode sessions will not be paced "
         "and may use more cpu (upgrade ffmpeg to >= 4.x / 6.1 for pacing)", 4)
     return 0
@@ -263,6 +275,18 @@ def hls_path(histpath: str, rem: str, mtime: float) -> str:
     fn = ub64enc(h).decode("ascii")[:24]
 
     return "%s/vt/%s/%s.%x" % (histpath, rd, fn, int(mtime))
+
+
+def hls_nseg(cachedir: str, seg: float) -> int:
+    # number of segments in the VOD playlists of this cache entry, or 0 when
+    # the source has not been probed yet (meta.txt is written by HlsSrv._meta
+    # and reused by every playlist/segment; same formula as _gen_playlist)
+    try:
+        with open(os.path.join(cachedir, "meta.txt"), "rb") as f:
+            dur = float(f.read().decode("utf-8").split(" ")[3])
+        return int(math.ceil(dur / seg)) if dur > 0 and seg > 0 else 0
+    except Exception:
+        return 0
 
 
 def hls_cfg(args: Any, vn: "VFS") -> str:
@@ -648,14 +672,16 @@ class HlsSrv(object):
 
     def _spawn(self, argv: list[bytes]) -> Any:
         # non-blocking ffmpeg launch (we keep the handle to kill on seek/idle);
-        # mirrors runcmd's niceness/oom handling. HAVE_FFMPEG is already a full
-        # path, so no CMD_EXEB .exe suffixing is needed here
+        # mirrors the niceness/oom/cwd handling of runcmd. argv[0] is the
+        # absolute path from mtag.HAVE_FFMPEG, so no CMD_EXEB .exe suffixing is
+        # needed; cwd=SCWD (%systemroot% on windows) keeps ffmpeg from picking
+        # up hostile dlls/binaries in the volume it is reading, same as runcmd
         ka: dict[str, Any] = {}
         if WINDOWS:
             ka["creationflags"] = 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
         elif NICEB:
             argv = [NICEB] + argv
-        p = sp.Popen(argv, stdout=sp.DEVNULL, stderr=sp.DEVNULL, **ka)
+        p = sp.Popen(argv, stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=SCWD, **ka)
         if not ANYWIN and not MACOS:
             try:
                 with open("/proc/%d/oom_score_adj" % (p.pid,), "wb") as f:
@@ -749,7 +775,7 @@ class HlsSrv(object):
         kf = ("expr:gte(t,n_forced*%g)" % seg).encode("ascii")
 
         # fmt: off
-        argv = bwrap(HAVE_FFMPEG, bap_in, segpat) + [
+        argv = bwrap(ffmpeg_bin(), bap_in, segpat) + [
             b"-nostdin",
             b"-v", b"error",
             b"-hide_banner",

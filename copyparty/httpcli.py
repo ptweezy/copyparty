@@ -34,7 +34,7 @@ from .__init__ import ANYWIN, PY2, RES, RESM, TYPE_CHECKING, EnvParams, unicode
 from .__version__ import S_VERSION
 from .authsrv import LEELOO_DALLAS, VFS  # typechk
 from .bos import bos
-from .hls import hls_path
+from .hls import hls_nseg, hls_path
 from .qrkode import qr2svg, qrgen
 from .star import StreamTar
 from .sutil import StreamArc, gfilter
@@ -7048,8 +7048,9 @@ class HttpCli(object):
         if "dvcode" in vn.flags:
             raise Pebkac(404)
 
+        # th_r_ffv is normalized to a set[str] by svchub (_build_th_fset)
         ext = src.rsplit(".", 1)[-1].lower() if "." in src else ""
-        if ext not in set(self.args.th_r_ffv.split(",")):
+        if ext not in self.args.th_r_ffv:
             raise Pebkac(404)
 
         abspath = vn.dcanonical(src)
@@ -7092,7 +7093,17 @@ class HttpCli(object):
         if fn == "index.m3u8":
             return self._tx_hls_playlist(ptop, vrem, mtime, rdir, height)
 
-        return self._tx_hls_segment(ptop, vrem, mtime, int(fn[1:6]), rdir, fn, height)
+        # a segment past the end of the VOD playlist can never exist; refuse it
+        # up front instead of starting an ffmpeg session that seeks past EOF and
+        # then waiting for a segment that never appears (only possible once the
+        # source has been probed, which any playlist request will have done)
+        idx = int(fn[1:6])
+        seg = float(vn.flags.get("vt_seg", self.args.vt_seg)) or 4.0
+        nseg = hls_nseg(cachedir, seg)
+        if nseg and idx >= nseg:
+            raise Pebkac(404, "segment index beyond the end of the video")
+
+        return self._tx_hls_segment(ptop, vrem, mtime, idx, rdir, fn, height)
 
     def _tx_hls_master(
         self, ptop: str, vrem: str, mtime: int, cachedir: str
@@ -7119,7 +7130,7 @@ class HttpCli(object):
                 break
 
             if time.time() > deadline:
-                raise Pebkac(504, "video transcode did not produce a playlist in time")
+                raise Pebkac(503, "video transcode did not produce a playlist in time")
 
             time.sleep(0.2)
 
@@ -7150,7 +7161,7 @@ class HttpCli(object):
                 break
 
             if time.time() > deadline:
-                raise Pebkac(504, "video transcode did not produce a playlist in time")
+                raise Pebkac(503, "video transcode did not produce a playlist in time")
 
             time.sleep(0.2)
 
@@ -7190,7 +7201,7 @@ class HttpCli(object):
                 pass
 
             if time.time() > deadline:
-                raise Pebkac(504, "video transcode did not produce the segment in time")
+                raise Pebkac(503, "video transcode did not produce the segment in time")
 
             time.sleep(0.2)
 
