@@ -14,6 +14,7 @@ import locale
 import os
 import re
 import select
+import shutil
 import socket
 import sys
 import threading
@@ -39,7 +40,10 @@ from .__init__ import (
 from .__version__ import CODENAME, S_BUILD_DT, S_VERSION
 from .authsrv import expand_config_file, split_cfg_ln, upgrade_cfg_fmt
 from .bos import bos
+from .cert import NO_TLS
 from .cfg import flagcats, onedash
+from .mdns import DNS_VND
+from .qrkode import VENDORED as QR_VND
 from .svchub import SvcHub
 from .util import (
     APPLESAN_TXT,
@@ -49,6 +53,8 @@ from .util import (
     DEF_MTH,
     HAVE_BWRAP,
     HAVE_IPV6,
+    HAVE_MAGIC,
+    IFADDR_VND,
     IMPLICATIONS,
     JINJA_VER,
     MIKO_VER,
@@ -96,11 +102,12 @@ if PY2:
     range = xrange  # type: ignore
 
 try:
-    if os.environ.get("PRTY_NO_TLS"):
+    if NO_TLS:
         raise Exception()
 
-    HAVE_SSL = True
     import ssl
+
+    HAVE_SSL = True
 except:
     HAVE_SSL = False
 
@@ -584,6 +591,17 @@ def sfx_tpoke(top: str):
                 lprint("<TPOKE> [%s] %r" % (f, ex))
                 files.remove(f)
 
+        r = os.path.dirname(top)
+        for d in os.listdir(r):
+            try:
+                p = r + "/" + d
+                f = p + "/copyparty/up2k.py"
+                t2 = os.path.getmtime(f)
+                if t - t2 > 777777 and d.startswith("pe-copyparty"):
+                    shutil.rmtree(p)
+            except:
+                pass
+
         time.sleep(78123)
 
 
@@ -594,11 +612,63 @@ def showlic() -> None:
     except:
         buf = b""
 
-    if buf:
-        print(buf.decode("utf-8", "replace"))
-    else:
+    if not buf:
         print("no relevant license info to display")
         return
+
+    lic = buf.decode("utf-8", "replace")
+
+    try:
+        import site
+        from importlib import import_module
+        from inspect import getsourcefile
+
+        bases = site.PREFIXES + [site.USER_BASE]
+        bases = [x.replace(os.sep, "/") + "/" for x in list(set(bases)) if x]
+    except:
+        bases = []
+
+    # remove missing and/or non-vendored
+    for url, zi, zx in (
+        ("/dnslib/", 1, DNS_VND),
+        ("/ifaddr/", 1, IFADDR_VND),
+        ("/nayuki/QR", 1, QR_VND),
+        ("/partftpy", 2, PARTFTPY_VER),
+        ("/jinja/", 3, "jinja2"),
+        ("/markupsafe/", 3, "jinja2"),  # jinja2 sic
+        ("/pyftpdlib/", 2, PYFTPD_VER),  # heed PRTY_NO
+        ("/pyftpdlib/", 3, "pyftpdlib"),
+        ("/python-magic/", 1, HAVE_MAGIC),  # heed PRTY_NO
+        ("/python-magic/", 3, "magic"),
+    ):
+        if url not in lic:
+            continue
+        elif zi == 1:
+            if zx:
+                continue
+        elif zi == 2:
+            if zx != "(None)":
+                continue
+        elif zi == 3:
+            mod = None
+            try:
+                assert bases and getsourcefile and import_module  # type: ignore  # !rm
+                mod = import_module(zx)  # type: ignore
+                mp = getsourcefile(mod) or ""
+                for zs in bases:
+                    if mp.startswith(zs):
+                        mp = ""
+                if mp:
+                    continue
+            except:
+                if mod:
+                    continue
+        zs1, zs2 = lic.split(url, 1)
+        zs1 = zs1.rsplit("\n", 1)[0]
+        zs2 = zs2.split("\n\n", 1)[1]
+        lic = zs1 + "\n" + zs2
+
+    print(lic)
 
 
 def get_sects():
@@ -1755,6 +1825,7 @@ def add_safety(ap):
     ap2.add_argument("--csp-dl", metavar="TXT", default="", help="content-security-policy to apply for static files (volflag=csp_dl)")
     ap2.add_argument("--no-script", action="store_true", help="disables javascript in html files; helps prevent XSS but kills interactive websites; this will override \033[33m--csp-dl\033[0m with [\033[32mscript-src 'none'\033[0m] (volflag=noscript)")
     ap2.add_argument("--no-html", action="store_true", help="show html-files as plain text; helps prevent XSS but kills websites/blogs, also enables --no-script (volflag=nohtml)")
+    ap2.add_argument("--no-mime", action="store_true", help="disallow changing the response mimetype with url-parameter ?mime=... (volflag=nomime)")
     ap2.add_argument("--vague-403", action="store_true", help="send 404 instead of 403 (security through ambiguity, very enterprise). \033[1;31mWARNING:\033[0m Not compatible with WebDAV")
     ap2.add_argument("--force-js", action="store_true", help="don't send folder listings as HTML, force clients to use the embedded json instead -- slight protection against misbehaving search engines which ignore \033[33m--no-robots\033[0m")
     ap2.add_argument("--no-robots", action="store_true", help="adds http and html headers asking search engines to not index anything (volflag=norobots)")
@@ -1969,6 +2040,7 @@ def add_db_general(ap, hcores):
     ap2.add_argument("--no-forget", action="store_true", help="never forget indexed files, even when deleted from disk -- makes it impossible to ever upload the same file twice -- only useful for offloading uploads to a cloud service or something (volflag=noforget)")
     ap2.add_argument("--forget-ip", metavar="MIN", type=int, default=0, help="remove uploader-IP from database (and make unpost impossible) \033[33mMIN\033[0m minutes after upload, for GDPR reasons. Default [\033[32m0\033[0m] is never-forget. [\033[32m1440\033[0m]=day, [\033[32m10080\033[0m]=week, [\033[32m43200\033[0m]=month. (volflag=forget_ip)")
     ap2.add_argument("--dbd", metavar="PROFILE", default="wal", help="database durability profile; sets the tradeoff between robustness and speed, see \033[33m--help-dbd\033[0m (volflag=dbd)")
+    ap2.add_argument("--hist-cow", action="store_true", help="btrfs-only: histpaths (db/thumbs) are nocow by default; if you really need Copy-on-write then enable this (volflag=hist_cow)")
     ap2.add_argument("--xlink", action="store_true", help="on upload: check all volumes for dupes, not just the target volume (probably buggy, not recommended) (volflag=xlink)")
     ap2.add_argument("--hash-mt", metavar="CORES", type=int, default=hcores, help="num cpu cores to use for file hashing; set 0 or 1 for single-core hashing")
     ap2.add_argument("--re-maxage", metavar="SEC", type=int, default=0, help="rescan filesystem for changes every \033[33mSEC\033[0m seconds; 0=off (volflag=scan)")
@@ -2447,7 +2519,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         if al.ciphers:
             configure_ssl_ciphers(al)
     else:
-        warn("ssl module does not exist; cannot enable https")
+        if not al.http_only and not NO_TLS:
+            warn("ssl module does not exist; cannot enable https")
         al.http_only = True
 
     if PY2 and WINDOWS and al.e2d:
